@@ -186,6 +186,9 @@ pub trait ConfigLoader: Send + Sync {
     fn get_socks5_portal(&self) -> Option<url::Url>;
     fn set_socks5_portal(&self, addr: Option<url::Url>);
 
+    fn get_tcp_bridges(&self) -> Vec<TcpBridgeRule>;
+    fn set_tcp_bridges(&self, bridges: Vec<TcpBridgeRule>);
+
     fn get_port_forwards(&self) -> Vec<PortForwardConfig>;
     fn set_port_forwards(&self, forwards: Vec<PortForwardConfig>);
 
@@ -349,6 +352,12 @@ pub struct PortForwardConfig {
     pub proto: String,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Hash)]
+pub struct TcpBridgeRule {
+    pub listen: SocketAddr,
+    pub target: SocketAddr,
+}
+
 impl From<PortForwardConfigPb> for PortForwardConfig {
     fn from(config: PortForwardConfigPb) -> Self {
         PortForwardConfig {
@@ -400,6 +409,7 @@ struct Config {
 
     socks5_proxy: Option<url::Url>,
 
+    tcp_bridge: Option<Vec<TcpBridgeRule>>,
     port_forward: Option<Vec<PortForwardConfig>>,
 
     flags: Option<serde_json::Map<String, serde_json::Value>>,
@@ -732,6 +742,19 @@ impl ConfigLoader for TomlConfigLoader {
 
     fn set_socks5_portal(&self, addr: Option<url::Url>) {
         self.config.lock().unwrap().socks5_proxy = addr;
+    }
+
+    fn get_tcp_bridges(&self) -> Vec<TcpBridgeRule> {
+        self.config
+            .lock()
+            .unwrap()
+            .tcp_bridge
+            .clone()
+            .unwrap_or_default()
+    }
+
+    fn set_tcp_bridges(&self, bridges: Vec<TcpBridgeRule>) {
+        self.config.lock().unwrap().tcp_bridge = Some(bridges);
     }
 
     fn get_port_forwards(&self) -> Vec<PortForwardConfig> {

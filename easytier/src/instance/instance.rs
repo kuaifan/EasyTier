@@ -32,6 +32,7 @@ use crate::peers::peer_conn::PeerConnId;
 use crate::peers::peer_manager::{PeerManager, RouteAlgoType};
 use crate::peers::rpc_service::PeerManagerRpcService;
 use crate::peers::{create_packet_recv_chan, recv_packet_from_chan, PacketRecvChanReceiver};
+use crate::port_bridge::TcpPortBridge;
 use crate::proto::api::config::{
     ConfigPatchAction, ConfigRpc, GetConfigRequest, GetConfigResponse, PatchConfigRequest,
     PatchConfigResponse, PortForwardPatch,
@@ -532,6 +533,8 @@ pub struct Instance {
     #[cfg(feature = "socks5")]
     socks5_server: Arc<Socks5Server>,
 
+    port_bridge: TcpPortBridge,
+
     global_ctx: ArcGlobalCtx,
 }
 
@@ -608,6 +611,8 @@ impl Instance {
 
             #[cfg(feature = "socks5")]
             socks5_server,
+
+            port_bridge: TcpPortBridge::new(),
 
             global_ctx,
         }
@@ -962,6 +967,12 @@ impl Instance {
         if self.global_ctx.get_vpn_portal_cidr().is_some() {
             self.run_vpn_portal().await?;
         }
+
+        let tcp_rules = self.global_ctx.config.get_tcp_bridges();
+        self.port_bridge
+            .apply_rules(&tcp_rules)
+            .await
+            .with_context(|| "failed to activate tcp bridge rules")?;
 
         #[cfg(feature = "socks5")]
         self.socks5_server
@@ -1422,6 +1433,7 @@ impl Instance {
     }
 
     pub async fn clear_resources(&mut self) {
+        self.port_bridge.shutdown().await;
         self.peer_manager.clear_resources().await;
         let _ = self.nic_ctx.lock().await.take();
     }
