@@ -512,7 +512,7 @@ struct NetworkOptions {
         long = "port-bridge",
         env = "ET_PORT_BRIDGE",
         value_delimiter = ',',
-        help = "local port bridge rules, format proto://listen_addr/dst_addr",
+        help = t!("core_clap.port_bridge").to_string(),
         num_args = 0..
     )]
     port_bridge: Vec<String>,

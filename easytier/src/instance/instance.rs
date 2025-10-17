@@ -612,7 +612,7 @@ impl Instance {
             #[cfg(feature = "socks5")]
             socks5_server,
 
-            port_bridge: TcpPortBridge::new(),
+            port_bridge: TcpPortBridge::new(global_ctx.clone()),
 
             global_ctx,
         }

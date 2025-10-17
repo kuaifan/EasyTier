@@ -13,7 +13,10 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::common::config::PortBridgeRule;
+use crate::common::{
+    config::PortBridgeRule,
+    global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
+};
 
 struct BridgeTask {
     cancel: CancellationToken,
@@ -33,15 +36,16 @@ impl BridgeTask {
     }
 }
 
-#[derive(Default)]
 pub struct TcpPortBridge {
     tasks: Arc<Mutex<HashMap<PortBridgeRule, BridgeTask>>>,
+    global_ctx: ArcGlobalCtx,
 }
 
 impl TcpPortBridge {
-    pub fn new() -> Self {
+    pub fn new(global_ctx: ArcGlobalCtx) -> Self {
         Self {
             tasks: Arc::new(Mutex::new(HashMap::new())),
+            global_ctx,
         }
     }
 
@@ -71,8 +75,10 @@ impl TcpPortBridge {
                 .with_context(|| format!("failed to start port bridge for {:?}", rule))?;
             {
                 let mut guard = self.tasks.lock().await;
-                guard.insert(rule, bridge_task);
+                guard.insert(rule.clone(), bridge_task);
             }
+            self.global_ctx
+                .issue_event(GlobalCtxEvent::PortBridgeAdded(rule));
         }
 
         Ok(())

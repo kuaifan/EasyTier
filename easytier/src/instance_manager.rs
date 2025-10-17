@@ -351,6 +351,15 @@ fn handle_event(
                             ),
                         );
                     }
+                    GlobalCtxEvent::PortBridgeAdded(rule) => {
+                        print_event(
+                            instance_id,
+                            format!(
+                                "port bridge added. listen: {}, target: {}, proto: {}",
+                                rule.listen, rule.target, rule.proto
+                            ),
+                        );
+                    }
 
                     GlobalCtxEvent::ConfigPatched(patch) => {
                         print_event(instance_id, format!("config patched. patch: {:?}", patch));
