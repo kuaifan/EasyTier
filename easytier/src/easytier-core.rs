@@ -18,7 +18,7 @@ use easytier::{
     common::{
         config::{
             get_avaliable_encrypt_methods, ConfigLoader, ConsoleLoggerConfig, FileLoggerConfig,
-            LoggingConfigLoader, NetworkIdentity, PeerConfig, PortForwardConfig, TcpBridgeRule,
+            LoggingConfigLoader, NetworkIdentity, PeerConfig, PortBridgeRule, PortForwardConfig,
             TomlConfigLoader, VpnPortalConfig,
         },
         constants::EASYTIER_VERSION,
@@ -509,13 +509,13 @@ struct NetworkOptions {
     port_forward: Vec<url::Url>,
 
     #[arg(
-        long = "tcp-bridge",
-        env = "ET_TCP_BRIDGE",
+        long = "port-bridge",
+        env = "ET_PORT_BRIDGE",
         value_delimiter = ',',
-        help = "local TCP port bridge rules, format listen_addr->target_addr",
+        help = "local port bridge rules, format proto://listen_addr/dst_addr",
         num_args = 0..
     )]
-    tcp_bridge: Vec<String>,
+    port_bridge: Vec<String>,
 
     #[arg(
         long,
@@ -703,21 +703,38 @@ impl Cli {
     }
 }
 
-fn parse_tcp_bridge_rule(rule: &str) -> anyhow::Result<TcpBridgeRule> {
-    let parts: Vec<&str> = rule.split("->").collect();
-    if parts.len() != 2 {
-        bail!(
-            "invalid tcp bridge rule '{}', expected listen_addr->target_addr",
-            rule
-        );
+fn parse_port_bridge_rule(rule: &str) -> anyhow::Result<PortBridgeRule> {
+    let url =
+        url::Url::parse(rule).with_context(|| format!("invalid port bridge rule url: {}", rule))?;
+    let proto = url.scheme().to_lowercase();
+    if proto != "tcp" && proto != "udp" {
+        bail!("port bridge only supports tcp or udp, got {}", proto);
     }
-    let listen = parts[0]
-        .parse::<SocketAddr>()
+
+    let listen_host = url
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("listen host missing in {}", rule))?;
+    let listen_port = url
+        .port()
+        .ok_or_else(|| anyhow::anyhow!("listen port missing in {}", rule))?;
+
+    let listen: SocketAddr = format!("{}:{}", listen_host, listen_port)
+        .parse()
         .with_context(|| format!("invalid listen address in rule '{}'", rule))?;
-    let target = parts[1]
-        .parse::<SocketAddr>()
+
+    let target_str = url.path().trim_start_matches('/');
+    if target_str.is_empty() {
+        bail!("target address missing in {}", rule);
+    }
+    let target: SocketAddr = target_str
+        .parse()
         .with_context(|| format!("invalid target address in rule '{}'", rule))?;
-    Ok(TcpBridgeRule { listen, target })
+
+    Ok(PortBridgeRule {
+        proto,
+        listen,
+        target,
+    })
 }
 
 impl NetworkOptions {
@@ -913,14 +930,14 @@ impl NetworkOptions {
             cfg.set_port_forwards(old);
         }
 
-        if !self.tcp_bridge.is_empty() {
-            let mut bridges = cfg.get_tcp_bridges();
-            for rule in &self.tcp_bridge {
-                let parsed = parse_tcp_bridge_rule(rule)
-                    .with_context(|| format!("failed to parse tcp bridge rule: {}", rule))?;
+        if !self.port_bridge.is_empty() {
+            let mut bridges = cfg.get_port_bridges();
+            for rule in &self.port_bridge {
+                let parsed = parse_port_bridge_rule(rule)
+                    .with_context(|| format!("failed to parse port bridge rule: {}", rule))?;
                 bridges.push(parsed);
             }
-            cfg.set_tcp_bridges(bridges);
+            cfg.set_port_bridges(bridges);
         }
 
         let mut f = cfg.get_flags();

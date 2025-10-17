@@ -968,11 +968,11 @@ impl Instance {
             self.run_vpn_portal().await?;
         }
 
-        let tcp_rules = self.global_ctx.config.get_tcp_bridges();
+        let bridge_rules = self.global_ctx.config.get_port_bridges();
         self.port_bridge
-            .apply_rules(&tcp_rules)
+            .apply_rules(&bridge_rules)
             .await
-            .with_context(|| "failed to activate tcp bridge rules")?;
+            .with_context(|| "failed to activate port bridge rules")?;
 
         #[cfg(feature = "socks5")]
         self.socks5_server
