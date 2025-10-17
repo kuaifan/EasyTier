@@ -533,7 +533,7 @@ pub struct Instance {
     #[cfg(feature = "socks5")]
     socks5_server: Arc<Socks5Server>,
 
-    port_bridge: TcpPortBridge,
+    port_bridge: Arc<TcpPortBridge>,
 
     global_ctx: ArcGlobalCtx,
 }
@@ -612,7 +612,7 @@ impl Instance {
             #[cfg(feature = "socks5")]
             socks5_server,
 
-            port_bridge: TcpPortBridge::new(global_ctx.clone()),
+            port_bridge: Arc::new(TcpPortBridge::new(global_ctx.clone())),
 
             global_ctx,
         }
@@ -967,6 +967,8 @@ impl Instance {
         if self.global_ctx.get_vpn_portal_cidr().is_some() {
             self.run_vpn_portal().await?;
         }
+
+        self.port_bridge.start_dhcp_watch().await;
 
         let bridge_rules = self.global_ctx.config.get_port_bridges();
         self.port_bridge

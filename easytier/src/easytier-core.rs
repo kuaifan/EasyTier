@@ -711,12 +711,20 @@ fn parse_port_bridge_rule(rule: &str) -> anyhow::Result<PortBridgeRule> {
         bail!("port bridge only supports tcp or udp, got {}", proto);
     }
 
-    let listen_host = url
-        .host_str()
-        .ok_or_else(|| anyhow::anyhow!("listen host missing in {}", rule))?;
-    let listen_port = url
-        .port()
-        .ok_or_else(|| anyhow::anyhow!("listen port missing in {}", rule))?;
+    let mut listen_from_dhcp = false;
+    let (listen_host, listen_port) = match (url.host_str(), url.port()) {
+        (Some(host), Some(port)) => (host, port),
+        (Some(host), None) => {
+            let port = host.parse::<u16>().map_err(|_| {
+                anyhow::anyhow!("listen port missing in {}, please specify host:port", rule)
+            })?;
+            listen_from_dhcp = true;
+            ("0.0.0.0", port)
+        }
+        _ => {
+            anyhow::bail!("listen host missing in {}", rule);
+        }
+    };
 
     let listen: SocketAddr = format!("{}:{}", listen_host, listen_port)
         .parse()
@@ -734,6 +742,7 @@ fn parse_port_bridge_rule(rule: &str) -> anyhow::Result<PortBridgeRule> {
         proto,
         listen,
         target,
+        listen_from_dhcp,
     })
 }
 

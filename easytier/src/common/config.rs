@@ -357,6 +357,8 @@ pub struct PortBridgeRule {
     pub proto: String,
     pub listen: SocketAddr,
     pub target: SocketAddr,
+    #[serde(default)]
+    pub listen_from_dhcp: bool,
 }
 
 impl From<PortForwardConfigPb> for PortForwardConfig {

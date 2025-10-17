@@ -36,8 +36,38 @@ impl BridgeTask {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct PortBridgeRuntimeRule {
+    proto: String,
+    listen: SocketAddr,
+    target: SocketAddr,
+    listen_from_dhcp: bool,
+}
+
+impl PortBridgeRuntimeRule {
+    fn from_rule(rule: &PortBridgeRule, listen: SocketAddr) -> Self {
+        Self {
+            proto: rule.proto.clone(),
+            listen,
+            target: rule.target,
+            listen_from_dhcp: rule.listen_from_dhcp,
+        }
+    }
+
+    fn to_event_rule(&self) -> PortBridgeRule {
+        PortBridgeRule {
+            proto: self.proto.clone(),
+            listen: self.listen,
+            target: self.target,
+            listen_from_dhcp: self.listen_from_dhcp,
+        }
+    }
+}
+
 pub struct TcpPortBridge {
-    tasks: Arc<Mutex<HashMap<PortBridgeRule, BridgeTask>>>,
+    tasks: Arc<Mutex<HashMap<PortBridgeRuntimeRule, BridgeTask>>>,
+    configured_rules: Arc<Mutex<Vec<PortBridgeRule>>>,
+    dhcp_watch_task: Arc<Mutex<Option<JoinHandle<()>>>>,
     global_ctx: ArcGlobalCtx,
 }
 
@@ -45,17 +75,77 @@ impl TcpPortBridge {
     pub fn new(global_ctx: ArcGlobalCtx) -> Self {
         Self {
             tasks: Arc::new(Mutex::new(HashMap::new())),
+            configured_rules: Arc::new(Mutex::new(Vec::new())),
+            dhcp_watch_task: Arc::new(Mutex::new(None)),
             global_ctx,
         }
     }
 
     pub async fn apply_rules(&self, rules: &[PortBridgeRule]) -> anyhow::Result<()> {
-        let mut guard = self.tasks.lock().await;
-        let existing: HashSet<PortBridgeRule> = guard.keys().cloned().collect();
-        let desired: HashSet<PortBridgeRule> = rules.iter().cloned().collect();
+        {
+            let mut guard = self.configured_rules.lock().await;
+            *guard = rules.to_vec();
+        }
+        self.reconcile().await
+    }
 
-        let to_remove: Vec<PortBridgeRule> = existing.difference(&desired).cloned().collect();
-        let to_add: Vec<PortBridgeRule> = desired.difference(&existing).cloned().collect();
+    pub async fn shutdown(&self) {
+        if let Some(handle) = self.dhcp_watch_task.lock().await.take() {
+            handle.abort();
+            let _ = handle.await;
+        }
+
+        let mut guard = self.tasks.lock().await;
+        let tasks: Vec<_> = guard.drain().map(|(_, task)| task).collect();
+        drop(guard);
+
+        for task in tasks {
+            task.stop().await;
+        }
+    }
+
+    pub async fn start_dhcp_watch(self: &Arc<Self>) {
+        let mut guard = self.dhcp_watch_task.lock().await;
+        if guard.is_some() {
+            return;
+        }
+        let mut subscriber = self.global_ctx.subscribe();
+        let this = Arc::downgrade(self);
+        let handle = tokio::spawn(async move {
+            loop {
+                match subscriber.recv().await {
+                    Ok(GlobalCtxEvent::DhcpIpv4Changed(_, _)) => {
+                        if let Some(strong) = this.upgrade() {
+                            if let Err(err) = strong.reconcile().await {
+                                tracing::error!(
+                                    "failed to refresh port bridge after DHCP change: {:?}",
+                                    err
+                                );
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                }
+            }
+        });
+        *guard = Some(handle);
+    }
+
+    async fn reconcile(&self) -> anyhow::Result<()> {
+        let configured_rules = { self.configured_rules.lock().await.clone() };
+        let resolved_rules = self.resolve_rules(&configured_rules)?;
+
+        let mut guard = self.tasks.lock().await;
+        let existing: HashSet<PortBridgeRuntimeRule> = guard.keys().cloned().collect();
+        let desired: HashSet<PortBridgeRuntimeRule> = resolved_rules.iter().cloned().collect();
+
+        let to_remove: Vec<PortBridgeRuntimeRule> =
+            existing.difference(&desired).cloned().collect();
+        let to_add: Vec<PortBridgeRuntimeRule> = desired.difference(&existing).cloned().collect();
 
         let mut tasks_to_stop = Vec::new();
         for rule in to_remove {
@@ -78,23 +168,40 @@ impl TcpPortBridge {
                 guard.insert(rule.clone(), bridge_task);
             }
             self.global_ctx
-                .issue_event(GlobalCtxEvent::PortBridgeAdded(rule));
+                .issue_event(GlobalCtxEvent::PortBridgeAdded(rule.to_event_rule()));
         }
 
         Ok(())
     }
 
-    pub async fn shutdown(&self) {
-        let mut guard = self.tasks.lock().await;
-        let tasks: Vec<_> = guard.drain().map(|(_, task)| task).collect();
-        drop(guard);
+    fn resolve_rules(
+        &self,
+        rules: &[PortBridgeRule],
+    ) -> anyhow::Result<Vec<PortBridgeRuntimeRule>> {
+        let mut resolved = Vec::with_capacity(rules.len());
+        let mut waiting_for_dhcp = false;
 
-        for task in tasks {
-            task.stop().await;
+        for rule in rules {
+            if rule.listen_from_dhcp {
+                if let Some(ipv4) = self.global_ctx.get_ipv4() {
+                    let listen = SocketAddr::new(IpAddr::V4(ipv4.address()), rule.listen.port());
+                    resolved.push(PortBridgeRuntimeRule::from_rule(rule, listen));
+                } else {
+                    waiting_for_dhcp = true;
+                }
+            } else {
+                resolved.push(PortBridgeRuntimeRule::from_rule(rule, rule.listen));
+            }
         }
+
+        if waiting_for_dhcp {
+            tracing::debug!("port bridge rules waiting for DHCP IPv4 assignment");
+        }
+
+        Ok(resolved)
     }
 
-    async fn spawn_bridge_task(rule: PortBridgeRule) -> anyhow::Result<BridgeTask> {
+    async fn spawn_bridge_task(rule: PortBridgeRuntimeRule) -> anyhow::Result<BridgeTask> {
         match rule.proto.as_str() {
             "tcp" => Self::spawn_tcp_bridge_task(rule).await,
             "udp" => Self::spawn_udp_bridge_task(rule).await,
@@ -102,7 +209,7 @@ impl TcpPortBridge {
         }
     }
 
-    async fn spawn_tcp_bridge_task(rule: PortBridgeRule) -> anyhow::Result<BridgeTask> {
+    async fn spawn_tcp_bridge_task(rule: PortBridgeRuntimeRule) -> anyhow::Result<BridgeTask> {
         let listen = rule.listen;
         let target = rule.target;
 
@@ -147,7 +254,7 @@ impl TcpPortBridge {
         Ok(BridgeTask::new(cancel, handle))
     }
 
-    async fn spawn_udp_bridge_task(rule: PortBridgeRule) -> anyhow::Result<BridgeTask> {
+    async fn spawn_udp_bridge_task(rule: PortBridgeRuntimeRule) -> anyhow::Result<BridgeTask> {
         let listen = rule.listen;
         let target = rule.target;
 
