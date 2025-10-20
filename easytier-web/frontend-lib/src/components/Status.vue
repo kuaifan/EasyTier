@@ -429,7 +429,7 @@ function showEventLogs() {
             <Column :header="t('hostname')">
               <template #body="slotProps">
                 <div v-if="!slotProps.data.route.cost || !slotProps.data.route.feature_flag.is_public_server"
-                  v-tooltip="slotProps.data.route.hostname">
+                  v-tooltip="slotProps.data.route.hostname" class="max-w-[200px] truncate">
                   {{
                     slotProps.data.route.hostname }}
                 </div>
@@ -467,7 +467,8 @@ function showEventLogs() {
   @apply flex-none;
 }
 
-:deep(.p-datatable .p-datatable-column-title) {
+:deep(.p-datatable .p-datatable-column-title),
+:deep(.p-datatable .p-datatable-tbody > tr > td) {
   white-space: nowrap;
 }
 </style>
